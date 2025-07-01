@@ -15,6 +15,7 @@ from django.views.generic.base import TemplateView
 # 4. my
 # from misc.utils import eprint
 from core.consts import *
+from core.exc import *
 import core.converter
 import core.mgr
 import forms
@@ -64,6 +65,11 @@ class AboutView(TemplateView):
             return "about_ru.html"
         return self.template_name
 
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['engines'] = sorted(core.converter.x2pdf.keys())
+        return context
+
 
 class TplList(TemplateView):
     template_name = "tpl_list.html"
@@ -72,27 +78,25 @@ class TplList(TemplateView):
     def get_context_data(self, **kwargs):
         # __log_request(request)
         context = super().get_context_data(**kwargs)
-        context['data'] = core.mgr.moduledict
+        context['data'] = core.mgr.plugins_dict
         return context
 
-def __any2pdf(folder: str, template: str, context: dict, as_attach: bool = False):
+def __any2pdf(context: dict, folder: str, engine: str) -> HttpResponse:
     """
     EndPoint #2: Print
-    :param folder: plugin folder
-    :param template: template file name (relative to plugin dir)
     :param context: data
-    :param as_attach: view or download
+    :param folder: plugin folder
+    :param engine: template engine name
     :return: HttpResponse
     """
-    err, data = core.converter.any2pdf(os.path.join(settings.PLUGINS_DIR, folder, template), context)
-    if err:
-        response = HttpResponse(_('We had some errors:<pre>{}</pre>').format(err))
+    try:
+        data = core.converter.x2pdf[engine](context, os.path.join(settings.PLUGINS_DIR, folder))
+    except DGRenderExc as e:
+        return HttpResponse(_('We had some errors:<pre>{}</pre>').format(e))
     else:
         response = HttpResponse(content=data, content_type='application/pdf')
         response['Content-Transfer-Encoding'] = 'binary'
-        if as_attach:
-            response['Content-Disposition'] = 'filename="print.pdf";'  # download: + ';attachment'
-    return response
+        return response
 
 @try_tpl
 def doc_a(request, uuid):
@@ -103,7 +107,7 @@ def doc_a(request, uuid):
     :return request, html_tpl_name, context:dict
     """
     __log_request(request)
-    tpl = core.mgr.moduledict[uuid]
+    tpl = core.mgr.plugins_dict[uuid]
     # 1. check <pkg>.ANON/CREATE/UPDATE
     self_func = [K_T_F_ANON, K_T_F_ADD, K_T_F_EDIT][0]  # mode=0 (anon) => PRINT
     if self_func in tpl[K_V_MODULE].__dict__:
@@ -132,11 +136,11 @@ def doc_a(request, uuid):
             core.mgr.try_to_call(tpl, K_T_F_POST_FORM, data)
             # split
             # if mode == 0:  # ANON > PRINT, C/U -> P
-            if (K_T_T in tpl[K_V_MODULE].DATA) and (K_T_T_PRINT in tpl[K_V_MODULE].DATA[K_T_T]):
+            if (K_T_T in tpl[K_V_MODULE].DATA) and (K_T_T_ENGINE in tpl[K_V_MODULE].DATA[K_T_T]):
                 context_dict = {'data': data}
-                template = tpl[K_V_MODULE].DATA[K_T_T][K_T_T_PRINT]
+                engine = tpl[K_V_MODULE].DATA[K_T_T][K_T_T_ENGINE]
                 core.mgr.try_to_call(tpl, K_T_F_PRE_PRINT, data)
-                return __any2pdf(tpl[K_T_DIR], template, context_dict)
+                return __any2pdf(context_dict, tpl[K_T_DIR], engine)
             else:  # tmp dummy
                 return redirect('tpl_list')
     else:  # GET
